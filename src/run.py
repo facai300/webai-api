@@ -219,16 +219,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    print("INFO:     Checking availability of server modes...")
-    webai_is_available = asyncio.run(init_gemini_client())
-    if webai_is_available:
-        print(
-            f"INFO:     ✅ {Colors.CYAN}WebAI-to-API mode is available{Colors.RESET} (Gemini client initialized)."
-        )
-    else:
-        print(
-            f"WARN:     ⚠️ {Colors.YELLOW}WebAI-to-API mode is not available{Colors.RESET} (Could not initialize Gemini client)."
-        )
+    # 跳过主进程初始化，避免 curl_cffi 事件循环与子进程冲突
+    webai_is_available = True
+    print("INFO:     WebAI-to-API mode will be initialized on first request.")
     if G4F_AVAILABLE:
         print(
             f"INFO:     ✅ {Colors.CYAN}gpt4free mode is available{Colors.RESET} ('g4f' library is installed)."
