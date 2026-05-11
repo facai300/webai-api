@@ -32,11 +32,26 @@ default_model_gemini = gemini-3-flash
 gemini_cookie_1psid = 
 gemini_cookie_1psidts = 
 
+# --- DeepSeek Configuration ---
+# Provide your DeepSeek auth token here.
+# How to get it:
+# 1. Go to https://chat.deepseek.com and log in
+# 2. Open DevTools (F12) → Application → Local Storage
+# 3. Find "userToken" and copy its "value" field
+[DeepSeek]
+auth_token =
+
+# --- DeepSeek Model Configuration ---
+# Default model for DeepSeek requests.
+# Available models: deepseek-chat (V3), deepseek-reasoner (R1)
+default_model_deepseek = deepseek-chat
+
 # --- AI Services Toggle ---
 # Enable or disable specific AI providers.
 # Use "true" to enable and "false" to disable.
 [EnabledAI]
 gemini = true
+deepseek = true
 
 # --- Proxy Configuration ---
 # The app, use this proxy to connect gemini servers.

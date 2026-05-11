@@ -5,10 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.gemini_client import get_gemini_client, init_gemini_client, GeminiClientNotInitializedError
 from app.services.session_manager import init_session_managers
+from app.services.deepseek_client import init_deepseek_client, get_deepseek_client, DeepSeekClientNotInitializedError
+from app.services.deepseek_session_manager import init_deepseek_session_managers
 from app.logger import logger
 
 # Import endpoint routers
-from app.endpoints import gemini, chat, google_generative
+from app.endpoints import gemini, chat, google_generative, deepseek
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,6 +46,17 @@ async def lifespan(app: FastAPI):
     except GeminiClientNotInitializedError as e:
         logger.warning(f"Session managers not initialized: {e}")
 
+    # --- DeepSeek Initialization ---
+    try:
+        ds_init_result = await init_deepseek_client()
+        if ds_init_result:
+            init_deepseek_session_managers()
+            logger.info("DeepSeek client and session managers initialized.")
+        else:
+            logger.warning("DeepSeek client initialization skipped (check config).")
+    except Exception as e:
+        logger.warning(f"DeepSeek client initialization error: {e}")
+
     yield
 
     # Shutdown logic: No explicit client closing is needed anymore.
@@ -64,3 +77,4 @@ app.add_middleware(
 app.include_router(gemini.router)
 app.include_router(chat.router)
 app.include_router(google_generative.router)
+app.include_router(deepseek.router)

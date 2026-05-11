@@ -413,3 +413,142 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
     else:
         logger.warning(f"Unsupported service: {service}")
         return None
+
+
+def get_deepseek_token_from_browser() -> Optional[str]:
+    """
+    Auto-extract DeepSeek userToken from browser localStorage.
+
+    DeepSeek stores the auth token in localStorage (not cookies),
+    so we need to read browser profile data directly.
+    """
+    browser_name = CONFIG["Browser"].get("name", "chrome").lower()
+    logger.info(f"Attempting to extract DeepSeek token from browser: {browser_name}")
+
+    if browser_name in ("chrome", "google-chrome"):
+        token = _get_deepseek_token_from_chromium("google-chrome")
+    elif browser_name == "brave":
+        token = _get_deepseek_token_from_chromium("brave")
+    elif browser_name == "edge":
+        token = _get_deepseek_token_from_chromium("microsoft-edge")
+    elif browser_name == "firefox":
+        token = _get_deepseek_token_from_firefox()
+    else:
+        logger.warning(f"Unsupported browser for DeepSeek token extraction: {browser_name}")
+        return None
+
+    if token:
+        logger.info("DeepSeek token successfully extracted from browser.")
+        return token
+
+    logger.warning("Could not extract DeepSeek token from browser.")
+    return None
+
+
+def _get_deepseek_token_from_chromium(browser_dir_name: str) -> Optional[str]:
+    """
+    Extract DeepSeek userToken from Chromium-based browser localStorage (LevelDB).
+    """
+    home = os.path.expanduser("~")
+    leveldb_path = os.path.join(
+        home, ".config", browser_dir_name, "Default", "Local Storage", "leveldb"
+    )
+
+    if not os.path.isdir(leveldb_path):
+        logger.info(f"Chromium LevelDB path not found: {leveldb_path}")
+        # Fallback: try snap-based Chrome path
+        snap_path = os.path.join(
+            home, "snap", browser_dir_name, "current",
+            ".config", browser_dir_name, "Default", "Local Storage", "leveldb"
+        )
+        if os.path.isdir(snap_path):
+            leveldb_path = snap_path
+        else:
+            return None
+
+    # The localStorage key in LevelDB is: _https://chat.deepseek.com\x00\x00userToken
+    # We look for the origin marker + key pattern and extract the value nearby.
+    origin_marker = b"chat.deepseek.com"
+    key_marker = b"userToken"
+
+    for fname in sorted(os.listdir(leveldb_path)):
+        if not (fname.endswith(".ldb") or fname.endswith(".log")):
+            continue
+        fpath = os.path.join(leveldb_path, fname)
+        try:
+            with open(fpath, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+
+        if origin_marker not in data or key_marker not in data:
+            continue
+
+        # Token is a long alphanumeric string (JWT-like or base64)
+        # Try to find it near "userToken" marker
+        idx = data.find(key_marker)
+        if idx == -1:
+            continue
+
+        # Search forward from userToken for a valid-looking token string
+        search_start = idx + len(key_marker)
+        chunk = data[search_start:search_start + 300]
+
+        # The token is base64-encoded (may contain +, /, =) or a JWT (dots)
+        import re
+        matches = re.findall(rb"[A-Za-z0-9_\-\.\+/]{40,}", chunk)
+        for m in matches:
+            token = m.decode("utf-8", errors="ignore")
+            if len(token) >= 40:
+                return token
+
+    return None
+
+
+def _get_deepseek_token_from_firefox() -> Optional[str]:
+    """
+    Extract DeepSeek userToken from Firefox localStorage (webappsstore.sqlite).
+    """
+    home = os.path.expanduser("~")
+    profiles_path = os.path.join(home, ".mozilla", "firefox")
+
+    if not os.path.isdir(profiles_path):
+        return None
+
+    import glob
+    profile_dirs = glob.glob(os.path.join(profiles_path, "*.default*")) + \
+                   glob.glob(os.path.join(profiles_path, "*.default-release*"))
+
+    for profile_dir in profile_dirs:
+        db_path = os.path.join(profile_dir, "webappsstore.sqlite")
+        if not os.path.exists(db_path):
+            continue
+        try:
+            import tempfile
+            import shutil
+
+            with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
+                tmp_path = tf.name
+                shutil.copy2(db_path, tmp_path)
+
+            try:
+                conn = sqlite3.connect(tmp_path)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT value FROM webappsstore2 "
+                    "WHERE scope LIKE '%chat.deepseek%' AND key = 'userToken'"
+                )
+                row = cursor.fetchone()
+                conn.close()
+                if row and row[0]:
+                    return row[0]
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.warning(f"Failed to read Firefox localStorage: {e}")
+            continue
+
+    return None

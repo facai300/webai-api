@@ -12,6 +12,7 @@ packages = [
     { include = "app", from = "src" },
     { include = "models", from = "src" },
     { include = "schemas", from = "src" },
+    { include = "deepseek_web", from = "src" },
 ]
 
 [tool.poetry.dependencies]
@@ -33,6 +34,8 @@ python-multipart = "^0.0.21"
 aiohttp-socks = "^0.11.0"
 nodriver = "^0.48.1"
 platformdirs = "^4.3.8"
+drissionpage = "^4.0"
+wasmtime = ">=1.0"
 
 
 [build-system]
