@@ -82,10 +82,17 @@ async def deepseek_stream(request: DeepSeekRequest):
                 thinking_enabled=request.thinking_enabled,
                 search_enabled=request.search_enabled,
             ):
-                data = json.dumps(chunk, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+                if chunk.get("type") not in ("text", "thinking"):
+                    continue
                 if chunk.get("finish_reason") == "stop":
                     break
+                content = chunk.get("content", "")
+                if content:
+                    # OpenAI-compatible SSE format for streaming
+                    sse_data = {
+                        "choices": [{"delta": {"content": content}, "index": 0}]
+                    }
+                    yield f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"Error in /deepseek/stream: {e}", exc_info=True)

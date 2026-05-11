@@ -45,6 +45,7 @@ class DeepSeekAPI:
 
         self.auth_token = auth_token
         self.pow_solver = DeepSeekPOW()
+        self._stream_active = False  # state for SSE parsing
 
         # Load cookies from JSON file
         cookies_path = Path(__file__).parent / 'cookies.json'
@@ -203,7 +204,7 @@ class DeepSeekAPI:
 
         json_data = {
             'chat_session_id': chat_session_id,
-            'parent_message_id': parent_message_id,
+            'parent_message_id': int(parent_message_id) if parent_message_id else None,
             'prompt': prompt,
             'ref_file_ids': [],
             'thinking_enabled': thinking_enabled,
@@ -250,27 +251,77 @@ class DeepSeekAPI:
             raise NetworkError(f"Network error occurred during streaming: {str(e)}")
 
     def _parse_chunk(self, chunk: bytes) -> Optional[Dict[str, Any]]:
-        """Parse a SSE chunk from the API response"""
+        """Parse a SSE chunk from the current DeepSeek API response format."""
         if not chunk:
             return None
 
+        text = chunk.decode('utf-8', errors='replace')
+
+        # Skip event lines (event: ready, event: finish, etc.)
+        if text.startswith('event:'):
+            return None
+
+        # Only process data: lines
+        if not text.startswith('data: '):
+            return None
+
         try:
-            if chunk.startswith(b'data: '):
-                data = json.loads(chunk[6:])
-
-                if 'choices' in data and data['choices']:
-                    choice = data['choices'][0]
-                    if 'delta' in choice:
-                        delta = choice['delta']
-
-                        return {
-                            'content': delta.get('content', ''),
-                            'type': delta.get('type', ''),
-                            'finish_reason': choice.get('finish_reason')
-                        }
+            payload = text[6:]
+            data = json.loads(payload)
         except json.JSONDecodeError:
-            raise APIError("Invalid JSON in response chunk")
-        except Exception as e:
-            raise APIError(f"Error parsing chunk: {str(e)}")
+            return None
+
+        # Empty data {} — separator, skip
+        if not data:
+            return None
+
+        p = data.get('p', '')
+        o = data.get('o', '')
+        v = data.get('v')
+
+        # --- Content chunk: {"p":"response/content","o":"APPEND","v":"..."} ---
+        if p == 'response/content' and o == 'APPEND':
+            self._stream_active = True
+            return {
+                'content': v or '',
+                'type': 'text',
+                'finish_reason': None,
+            }
+
+        # --- Continuation of content: {"v":"..."} (no p field, after content) ---
+        if not p and isinstance(v, str) and self._stream_active:
+            return {
+                'content': v,
+                'type': 'text',
+                'finish_reason': None,
+            }
+
+        # --- Stream finished: {"p":"response/status","v":"FINISHED"} ---
+        if p == 'response/status' and v == 'FINISHED':
+            self._stream_active = False
+            return {
+                'content': '',
+                'type': 'text',
+                'finish_reason': 'stop',
+            }
+
+        # --- Token usage: {"p":"response/accumulated_token_usage","o":"SET","v":45} ---
+        if p == 'response/accumulated_token_usage' and o == 'SET':
+            return {
+                'content': '',
+                'type': 'usage',
+                'token_count': v,
+                'finish_reason': None,
+            }
+
+        # --- Initial response metadata (carries message_id for threading) ---
+        if isinstance(v, dict) and 'response' in v:
+            msg_id = v['response'].get('message_id')
+            if msg_id:
+                return {
+                    'content': str(msg_id),
+                    'type': 'message_id',
+                    'finish_reason': None,
+                }
 
         return None
