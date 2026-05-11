@@ -364,28 +364,26 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
     """Enhanced cookie extraction with cross-platform support"""
     browser_name = CONFIG["Browser"].get("name", "firefox").lower()
     logger.info(f"Attempting to get cookies from browser: {browser_name} for service: {service}")
-    
+
     extractor = CrossPlatformCookieExtractor()
-    
+
     try:
         cookies = extractor.get_cookies_with_fallback(browser_name)
-        
-        if not cookies:
+        if cookies:
+            logger.info(f"Successfully retrieved cookies from {browser_name}")
+        else:
             logger.error(f"Failed to retrieve cookies from {browser_name}")
             return None
-        
-        logger.info(f"Successfully retrieved cookies from {browser_name}")
-        
     except Exception as e:
         logger.error(f"An unexpected error occurred while retrieving cookies from {browser_name}: {e}", exc_info=True)
         return None
-    
+
     # Process cookies for the requested service
     if service == "gemini":
         logger.info("Looking for Gemini cookies (__Secure-1PSID and __Secure-1PSIDTS)...")
         secure_1psid = None
         secure_1psidts = None
-        
+
         try:
             for cookie in cookies:
                 if hasattr(cookie, 'name') and hasattr(cookie, 'value') and hasattr(cookie, 'domain'):
@@ -398,13 +396,24 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
         except Exception as e:
             logger.error(f"Error processing cookies: {e}")
             return None
-        
+
+        # If browser-cookie3 missed PSIDTS, try reading Firefox database directly
+        if secure_1psid and not secure_1psidts and browser_name == "firefox":
+            logger.info("browser-cookie3 found PSID but missed PSIDTS, trying direct database read...")
+            try:
+                db_path = _get_firefox_cookies_db_path()
+                if db_path:
+                    ts_val = _read_firefox_cookie_direct(db_path, "__Secure-1PSIDTS")
+                    if ts_val:
+                        secure_1psidts = ts_val
+                        logger.info(f"Found __Secure-1PSIDTS via direct DB read: {secure_1psidts[:20]}...")
+            except Exception as e:
+                logger.warning(f"Direct Firefox DB read failed: {e}")
+
         if secure_1psid and secure_1psidts:
-            # Check if values are not empty (they might be encrypted on Windows)
             if len(secure_1psid.strip()) == 0 or len(secure_1psidts.strip()) == 0:
-                logger.warning("Gemini cookies found but appear to be empty (possibly encrypted). Manual cookie extraction may be required on Windows.")
+                logger.warning("Gemini cookies found but appear to be empty (possibly encrypted).")
                 return None
-            
             logger.info("Both Gemini cookies found and appear valid.")
             return secure_1psid, secure_1psidts
         else:
@@ -413,6 +422,49 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
     else:
         logger.warning(f"Unsupported service: {service}")
         return None
+
+
+def _get_firefox_cookies_db_path() -> Optional[str]:
+    """Find Firefox cookies.sqlite path, including Snap installations."""
+    import glob
+
+    home = os.path.expanduser("~")
+    # Standard path
+    paths = glob.glob(os.path.join(home, ".mozilla", "firefox", "*.default*", "cookies.sqlite"))
+    if paths:
+        return paths[0]
+    # Snap path
+    paths = glob.glob(os.path.join(home, "snap", "firefox", "common", ".mozilla", "firefox", "*.default*", "cookies.sqlite"))
+    if paths:
+        return paths[0]
+    return None
+
+
+def _read_firefox_cookie_direct(db_path: str, cookie_name: str) -> Optional[str]:
+    """Read a specific cookie value directly from Firefox's cookies.sqlite."""
+    import tempfile, shutil
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
+            tmp_path = tf.name
+            shutil.copy2(db_path, tmp_path)
+
+        conn = sqlite3.connect(tmp_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM moz_cookies WHERE name = ? AND host LIKE '%google%'",
+            (cookie_name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+        return None
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def get_deepseek_token_from_browser() -> Optional[str]:
