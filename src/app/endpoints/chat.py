@@ -203,6 +203,14 @@ async def list_models():
             "created": ts,
             "owned_by": "deepseek",
         })
+    # ChatGPT models (web version)
+    for m in ["gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"]:
+        models.append({
+            "id": m,
+            "object": "model",
+            "created": ts,
+            "owned_by": "chatgpt-web",
+        })
     return {"object": "list", "data": models}
 
 
@@ -215,6 +223,7 @@ async def chat_completions(request: OpenAIChatRequest):
 
     is_stream = request.stream if request.stream is not None else False
     is_deepseek = request.model.startswith("deepseek-")
+    is_chatgpt = request.model.startswith("gpt-")
 
     # Convert messages to prompt (shared logic)
     final_prompt = _messages_to_prompt(request.messages, request.tools)
@@ -222,6 +231,8 @@ async def chat_completions(request: OpenAIChatRequest):
     try:
         if is_deepseek:
             return await _route_to_deepseek(final_prompt, request, is_stream)
+        elif is_chatgpt:
+            return await _route_to_chatgpt(final_prompt, request, is_stream)
         else:
             return await _route_to_gemini(final_prompt, request, is_stream)
     except Exception as e:
@@ -312,4 +323,68 @@ async def _route_to_deepseek(prompt: str, request: OpenAIChatRequest, is_stream:
     # Non-streaming
     response_text = await ds_client.generate_content(prompt, model=request.model)
     openai_response = convert_to_openai_format(response_text, request.model, stream=False)
+    return openai_response
+
+
+async def _route_to_chatgpt(prompt: str, request: OpenAIChatRequest, is_stream: bool):
+    """Handle /v1/chat/completions via ChatGPT web."""
+    from app.services.chatgpt_client import get_chatgpt_client, ChatGPTClientNotInitializedError
+    try:
+        gpt_client = get_chatgpt_client()
+    except ChatGPTClientNotInitializedError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Reset conversation so each request is independent
+    await gpt_client.reset_conversation()
+
+    if is_stream:
+        from fastapi.responses import StreamingResponse
+
+        async def sse_stream():
+            import time
+            ts = int(time.time())
+            chunk_id = f"chatcmpl-{ts}"
+            try:
+                async for chunk in gpt_client.generate_stream(
+                    prompt, model="auto",
+                ):
+                    if chunk.get("type") != "text":
+                        continue
+                    if chunk.get("finish_reason") == "stop":
+                        sse_data = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": ts,
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0, "delta": {}, "finish_reason": "stop",
+                            }],
+                        }
+                        yield f"data: {json.dumps(sse_data)}\n\n"
+                        break
+                    content = chunk.get("content", "")
+                    if content:
+                        sse_data = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": ts,
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": content},
+                                "finish_reason": None,
+                            }],
+                        }
+                        yield f"data: {json.dumps(sse_data)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+    # Non-streaming
+    response_text = await gpt_client.generate_content(prompt, model="auto")
+    openai_response = convert_to_openai_format(response_text, request.model, stream=False)
+    # Reset conversation for next request
+    await gpt_client.reset_conversation()
     return openai_response

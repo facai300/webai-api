@@ -27,8 +27,10 @@ def load_config(config_file: str = "config.conf") -> configparser.ConfigParser:
         config["AI"] = {"default_model_gemini": "gemini-3-flash"}
     if "DeepSeek" not in config:
         config["DeepSeek"] = {"auth_token": "", "default_model_deepseek": "deepseek-v3"}
+    if "ChatGPT" not in config:
+        config["ChatGPT"] = {"access_token": ""}
     if "EnabledAI" not in config:
-        config["EnabledAI"] = {"gemini": "true", "deepseek": "true"}
+        config["EnabledAI"] = {"gemini": "true", "deepseek": "true", "chatgpt": "false"}
     if "Proxy" not in config:
         config["Proxy"] = {"http_proxy": ""}
 

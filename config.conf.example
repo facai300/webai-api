@@ -46,12 +46,26 @@ auth_token =
 # Available models: deepseek-v3, deepseek-r1
 default_model_deepseek = deepseek-v3
 
+# --- ChatGPT Configuration ---
+# Access token from chat.openai.com (web version, not API key).
+# How to get it:
+# 1. Open https://chat.openai.com in your browser and log in
+# 2. Open DevTools (F12) → Network tab
+# 3. Look for a request to /api/auth/session
+# 4. Copy the "accessToken" value from the response JSON
+[ChatGPT]
+access_token =
+
+# Optional: Custom proxy URL for ChatGPT bypass (default: https://bypass.churchless.tech/)
+# base_url = https://bypass.churchless.tech/
+
 # --- AI Services Toggle ---
 # Enable or disable specific AI providers.
 # Use "true" to enable and "false" to disable.
 [EnabledAI]
 gemini = true
 deepseek = true
+chatgpt = false
 
 # --- Proxy Configuration ---
 # The app, use this proxy to connect gemini servers.

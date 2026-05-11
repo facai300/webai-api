@@ -7,10 +7,11 @@ from app.services.gemini_client import get_gemini_client, init_gemini_client, Ge
 from app.services.session_manager import init_session_managers
 from app.services.deepseek_client import init_deepseek_client, get_deepseek_client, DeepSeekClientNotInitializedError
 from app.services.deepseek_session_manager import init_deepseek_session_managers
+from app.services.chatgpt_client import init_chatgpt_client
 from app.logger import logger
 
 # Import endpoint routers
-from app.endpoints import gemini, chat, google_generative, deepseek
+from app.endpoints import gemini, chat, google_generative, deepseek, gptweb
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,6 +58,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"DeepSeek client initialization error: {e}")
 
+    # --- ChatGPT Initialization ---
+    try:
+        gpt_init_result = await init_chatgpt_client()
+        if gpt_init_result:
+            logger.info("ChatGPT client initialized successfully.")
+        else:
+            logger.warning("ChatGPT client initialization skipped (check config).")
+    except Exception as e:
+        logger.warning(f"ChatGPT client initialization error: {e}")
+
     yield
 
     # Shutdown logic: No explicit client closing is needed anymore.
@@ -78,3 +89,4 @@ app.include_router(gemini.router)
 app.include_router(chat.router)
 app.include_router(google_generative.router)
 app.include_router(deepseek.router)
+app.include_router(gptweb.router)
