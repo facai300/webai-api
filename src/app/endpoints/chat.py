@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from app.logger import logger
 from schemas.request import GeminiRequest, OpenAIChatRequest
 from app.services.gemini_client import get_gemini_client, GeminiClientNotInitializedError
+from app.services.deepseek_client import get_deepseek_client, DeepSeekClientNotInitializedError
 from app.services.session_manager import get_translate_session_manager
 
 router = APIRouter()
@@ -136,104 +137,179 @@ def convert_to_openai_format(response_text: str, model: str, stream: bool = Fals
     }
 
 
-@router.get("/v1/models")
-async def list_models():
-    from gemini_webapi.constants import Model
-    ts = int(time.time())
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": model.model_name,
-                "object": "model",
-                "created": ts,
-                "owned_by": "google",
-            }
-            for model in Model
-            if model != Model.UNSPECIFIED
-        ],
-    }
+def _messages_to_prompt(messages: list, tools: Optional[list] = None) -> str:
+    """Convert OpenAI-style messages to a flat prompt string."""
+    parts = []
 
-
-@router.post("/v1/chat/completions")
-async def chat_completions(request: OpenAIChatRequest):
-    try:
-        gemini_client = get_gemini_client()
-    except GeminiClientNotInitializedError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    is_stream = request.stream if request.stream is not None else False
-
-    if not request.messages:
-        raise HTTPException(status_code=400, detail="No messages provided.")
-
-    conversation_parts = []
-    
     # Extract tools prompt
-    tools_prompt = _build_tools_prompt(request.tools) if request.tools else ""
+    tools_prompt = _build_tools_prompt(tools) if tools else ""
+    tools_appended = False
 
-    # Merge tools prompt with system message if possible, otherwise prepend it
-    system_msg_index = -1
-    for i, msg in enumerate(request.messages):
-        if msg.get("role") == "system":
-            system_msg_index = i
-            break
-
-    if tools_prompt:
-        if system_msg_index != -1:
-            # Append to existing system message
-            orig_content = request.messages[system_msg_index].get("content") or ""
-            request.messages[system_msg_index]["content"] = f"{orig_content}\n\n{tools_prompt}".strip()
-        else:
-            # No system message, add one at the beginning
-            conversation_parts.append(tools_prompt)
-
-    for msg in request.messages:
+    for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content") or ""
 
         if role == "system":
-            conversation_parts.append(f"System: {content}")
+            combined = f"System: {content}"
+            if tools_prompt and not tools_appended:
+                combined = f"{combined}\n\n{tools_prompt}"
+                tools_appended = True
+            parts.append(combined)
         elif role == "user":
-            conversation_parts.append(f"User: {content}")
+            parts.append(f"User: {content}")
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
                 for tc in tool_calls:
                     fn = tc.get("function", {})
-                    conversation_parts.append(
+                    parts.append(
                         f"Assistant called tool {fn.get('name')}: {fn.get('arguments', '')}"
                     )
             elif content:
-                conversation_parts.append(f"Assistant: {content}")
+                parts.append(f"Assistant: {content}")
         elif role == "tool":
             tool_call_id = msg.get("tool_call_id", "")
-            conversation_parts.append(f"Tool result [{tool_call_id}]: {content}")
+            parts.append(f"Tool result [{tool_call_id}]: {content}")
 
-    if not conversation_parts:
-        raise HTTPException(status_code=400, detail="No valid messages found.")
+    # If no system message, prepend tools prompt at the beginning
+    if tools_prompt and not tools_appended:
+        parts.insert(0, tools_prompt)
 
-    final_prompt = "\n\n".join(conversation_parts)
+    return "\n\n".join(parts)
 
+
+@router.get("/v1/models")
+async def list_models():
+    ts = int(time.time())
+    models = []
+    # Gemini models
+    try:
+        from gemini_webapi.constants import Model
+        for m in Model:
+            if m != Model.UNSPECIFIED:
+                models.append({
+                    "id": m.model_name,
+                    "object": "model",
+                    "created": ts,
+                    "owned_by": "google",
+                })
+    except ImportError:
+        pass
+    # DeepSeek models
+    for m in ["deepseek-v3", "deepseek-r1"]:
+        models.append({
+            "id": m,
+            "object": "model",
+            "created": ts,
+            "owned_by": "deepseek",
+        })
+    return {"object": "list", "data": models}
+
+
+@router.post("/v1/chat/completions")
+async def chat_completions(request: OpenAIChatRequest):
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="No messages provided.")
     if not request.model:
         raise HTTPException(status_code=400, detail="Model not specified in the request.")
 
+    is_stream = request.stream if request.stream is not None else False
+    is_deepseek = request.model.startswith("deepseek-")
+
+    # Convert messages to prompt (shared logic)
+    final_prompt = _messages_to_prompt(request.messages, request.tools)
+
     try:
-        response = await gemini_client.generate_content(message=final_prompt, model=request.model, files=None, gem=request.gem)
-        logger.debug(f"Gemini raw response: {response.text!r}")
-        tool_call = _parse_tool_call(response.text) if request.tools else None
-        logger.debug(f"Parsed tool_call: {tool_call}")
-        
-        openai_response = convert_to_openai_format(response.text, request.model, is_stream, tool_call)
-        
-        if is_stream:
-            from fastapi.responses import StreamingResponse
-            async def sse_stream():
-                yield f"data: {json.dumps(openai_response)}\n\n"
-                yield "data: [DONE]\n\n"
-            return StreamingResponse(sse_stream(), media_type="text/event-stream")
-            
-        return openai_response
+        if is_deepseek:
+            return await _route_to_deepseek(final_prompt, request, is_stream)
+        else:
+            return await _route_to_gemini(final_prompt, request, is_stream)
     except Exception as e:
-        logger.error(f"Error in /v1/chat/completions endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing chat completion: {str(e)}")
+        logger.error(f"Error in /v1/chat/completions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+async def _route_to_gemini(prompt: str, request: OpenAIChatRequest, is_stream: bool):
+    """Handle /v1/chat/completions via Gemini."""
+    try:
+        gemini_client = get_gemini_client()
+    except GeminiClientNotInitializedError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    response = await gemini_client.generate_content(
+        message=prompt, model=request.model, files=None, gem=request.gem
+    )
+    response_text = response.text if hasattr(response, "text") else str(response)
+    logger.debug(f"Gemini raw response: {response_text!r}")
+    tool_call = _parse_tool_call(response_text) if request.tools else None
+
+    openai_response = convert_to_openai_format(response_text, request.model, is_stream, tool_call)
+
+    if is_stream:
+        from fastapi.responses import StreamingResponse
+        async def sse_stream():
+            yield f"data: {json.dumps(openai_response)}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+    return openai_response
+
+
+async def _route_to_deepseek(prompt: str, request: OpenAIChatRequest, is_stream: bool):
+    """Handle /v1/chat/completions via DeepSeek."""
+    try:
+        ds_client = get_deepseek_client()
+    except DeepSeekClientNotInitializedError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    if is_stream:
+        from fastapi.responses import StreamingResponse
+
+        async def sse_stream():
+            ts = int(time.time())
+            chunk_id = f"chatcmpl-{ts}"
+            try:
+                async for chunk in ds_client.generate_stream(
+                    prompt, model=request.model,
+                ):
+                    if chunk.get("type") != "text":
+                        continue
+                    if chunk.get("finish_reason") == "stop":
+                        # Final chunk with stop reason
+                        sse_data = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": ts,
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop",
+                            }],
+                        }
+                        yield f"data: {json.dumps(sse_data)}\n\n"
+                        break
+                    content = chunk.get("content", "")
+                    if content:
+                        sse_data = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": ts,
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": content},
+                                "finish_reason": None,
+                            }],
+                        }
+                        yield f"data: {json.dumps(sse_data)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+    # Non-streaming
+    response_text = await ds_client.generate_content(prompt, model=request.model)
+    openai_response = convert_to_openai_format(response_text, request.model, stream=False)
+    return openai_response

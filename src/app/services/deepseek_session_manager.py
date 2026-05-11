@@ -17,7 +17,7 @@ class DeepSeekSessionManager:
     async def get_response(
         self,
         message: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v3",
         thinking_enabled: Optional[bool] = None,
         search_enabled: Optional[bool] = None,
     ) -> str:

@@ -6,13 +6,9 @@ from deepseek_web import DeepSeekAPI
 _SENTINEL = object()
 
 MODEL_MAP = {
-    "deepseek-chat": {"thinking": False, "search": False},
     "deepseek-v3": {"thinking": False, "search": False},
-    "deepseek-reasoner": {"thinking": True, "search": False},
     "deepseek-r1": {"thinking": True, "search": False},
-    "deepseek-chat-search": {"thinking": False, "search": True},
     "deepseek-v3-search": {"thinking": False, "search": True},
-    "deepseek-reasoner-search": {"thinking": True, "search": True},
     "deepseek-r1-search": {"thinking": True, "search": True},
 }
 
@@ -39,7 +35,7 @@ class MyDeepSeekClient:
     async def generate_content(
         self,
         message: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v3",
         thinking_enabled: Optional[bool] = None,
         search_enabled: Optional[bool] = None,
     ) -> str:
@@ -73,7 +69,7 @@ class MyDeepSeekClient:
     async def generate_stream(
         self,
         message: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v3",
         thinking_enabled: Optional[bool] = None,
         search_enabled: Optional[bool] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:

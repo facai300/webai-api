@@ -11,7 +11,7 @@ from app.services.deepseek_session_manager import get_deepseek_chat_manager
 
 class DeepSeekRequest(BaseModel):
     message: str
-    model: str = Field(default="deepseek-chat", description="Model: deepseek-chat, deepseek-reasoner, deepseek-v3, deepseek-r1")
+    model: str = Field(default="deepseek-v3", description="Model: deepseek-v3, deepseek-r1")
     thinking_enabled: Optional[bool] = None
     search_enabled: Optional[bool] = None
     stream: Optional[bool] = False

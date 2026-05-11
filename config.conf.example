@@ -43,8 +43,8 @@ auth_token =
 
 # --- DeepSeek Model Configuration ---
 # Default model for DeepSeek requests.
-# Available models: deepseek-chat (V3), deepseek-reasoner (R1)
-default_model_deepseek = deepseek-chat
+# Available models: deepseek-v3, deepseek-r1
+default_model_deepseek = deepseek-v3
 
 # --- AI Services Toggle ---
 # Enable or disable specific AI providers.
