@@ -4,6 +4,7 @@ import os
 from typing import Optional, List, Union
 from pathlib import Path
 from gemini_webapi import GeminiClient as WebGeminiClient
+from gemini_webapi.exceptions import APIError
 from app.config import CONFIG
 
 logger = logging.getLogger("app")
@@ -25,36 +26,28 @@ class MyGeminiClient:
     """
     def __init__(self, secure_1psid: str, secure_1psidts: str, proxy: str | None = None) -> None:
         self.client = WebGeminiClient(secure_1psid, secure_1psidts, proxy)
+        self.client.auto_refresh = False
         self._gems_cache = None
 
     async def init(self) -> None:
         """Initialize the Gemini client and persist any rotated cookies."""
-        await self.client.init()
+        await self.client.init(
+            auto_refresh=False, auto_close=False,
+            timeout=600, watchdog_timeout=300,
+        )
+        self.client.auto_refresh = False
+        # 直接 pin _running: close() 后立即复位
+        self._orig_client_close = self.client.close
+        async def _close_pin(delay=0):
+            await self._orig_client_close(delay)
+            self.client._running = True
+        self.client.close = _close_pin
         await self._persist_cookies()
 
     async def _persist_cookies(self) -> None:
-        """Persist rotated cookies back to config.conf to survive restarts."""
-        config_path = "config.conf"
-        if not os.path.exists(config_path):
-            return
-        try:
-            cookies = self.client.cookies
-            psid = cookies.get("__Secure-1PSID")
-            psidts = cookies.get("__Secure-1PSIDTS")
-            if not psid:
-                return
-            cfg = configparser.ConfigParser()
-            cfg.read(config_path, encoding="utf-8")
-            if "Cookies" not in cfg:
-                cfg["Cookies"] = {}
-            cfg["Cookies"]["gemini_cookie_1psid"] = psid
-            if psidts:
-                cfg["Cookies"]["gemini_cookie_1psidts"] = psidts
-            with open(config_path, "w", encoding="utf-8") as f:
-                cfg.write(f)
-            logger.info("Cookies persisted to config.conf after rotation.")
-        except Exception as e:
-            logger.warning(f"Failed to persist cookies: {e}")
+        """不再回写 cookie 到 config.conf，避免被 Google 标记的 cookie 覆盖好的。
+        Gemini 每次启动都从 Firefox 提取最新 cookie。"""
+        pass  # disabled - always use fresh Firefox cookies
 
     async def generate_content(
         self,
@@ -65,10 +58,38 @@ class MyGeminiClient:
     ):
         """
         Generate content using the Gemini client.
+        On 1100 error, force-reinit the client and retry once.
         """
+        import asyncio
         resolved_model = resolve_model_name(model)
         resolved_gem = await self._resolve_gem(gem) if gem else None
-        return await self.client.generate_content(message, model=resolved_model, files=files, gem=resolved_gem)
+
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    logger.info(f"[Gemini] 1100 重试 ({attempt}/2)，重新初始化客户端...")
+                    # Force reinit: close old client, create new one
+                    await self.client.close()
+                    self.client = WebGeminiClient(
+                        self.client._cookies.get("__Secure-1PSID", ""),
+                        self.client._cookies.get("__Secure-1PSIDTS", ""),
+                        self.client.proxy,
+                    )
+                    self.client.auto_refresh = False
+                    await self.client.init(auto_refresh=False, auto_close=False)
+                    self.client.auto_refresh = False
+                    await asyncio.sleep(5)
+
+                return await self.client.generate_content(
+                    message, model=resolved_model, files=files, gem=resolved_gem
+                )
+            except APIError as e:
+                err_str = str(e)
+                if "1100" in err_str and attempt < 2:
+                    continue
+                raise
+
+        raise RuntimeError("Gemini generate_content failed after retries")
 
     async def fetch_gems(self):
         """Fetch available gems and cache them."""

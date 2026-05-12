@@ -290,13 +290,41 @@ if __name__ == "__main__":
         print("\n[Controller] Ctrl+C detected. Initiating final shutdown...")
 
     finally:
-        # Final cleanup
+        # Final cleanup: stop server process
         if stop_event and not stop_event.is_set():
             stop_event.set()
 
         if current_process and current_process.is_alive():
             print("[Controller] Waiting for final server process to shut down...")
             current_process.join(timeout=10)
+            if current_process.is_alive():
+                print("[Controller] Force terminating server process...")
+                current_process.terminate()
+                current_process.join(timeout=3)
+
+        # Kill any orphan child processes that might have been left behind
+        import signal
+        current_pid = os.getpid()
+        try:
+            import psutil
+            parent = psutil.Process(current_pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            _, still_alive = psutil.wait_procs(parent.children(), timeout=3)
+            for p in still_alive:
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except ImportError:
+            # Fallback: kill by process group
+            try:
+                os.killpg(os.getpgid(current_pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
             if current_process.is_alive():
                 print("[Controller] Server did not shut down gracefully, terminating.")
                 current_process.terminate()
