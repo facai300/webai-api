@@ -13,6 +13,7 @@ packages = [
     { include = "models", from = "src" },
     { include = "schemas", from = "src" },
     { include = "deepseek_web", from = "src" },
+    { include = "chatgpt_web", from = "src" },
 ]
 
 [tool.poetry.dependencies]

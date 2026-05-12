@@ -47,17 +47,11 @@ auth_token =
 default_model_deepseek = deepseek-v3
 
 # --- ChatGPT Configuration ---
-# Access token from chat.openai.com (web version, not API key).
-# How to get it:
-# 1. Open https://chat.openai.com in your browser and log in
-# 2. Open DevTools (F12) → Network tab
-# 3. Look for a request to /api/auth/session
-# 4. Copy the "accessToken" value from the response JSON
+# Access token from chatgpt.com (required for browser session auth).
+# Get it from https://chat.openai.com/api/auth/session while logged in.
+# Requires Firefox with an active chatgpt.com login session for cookies.
 [ChatGPT]
 access_token =
-
-# Optional: Custom proxy URL for ChatGPT bypass (default: https://bypass.churchless.tech/)
-# base_url = https://bypass.churchless.tech/
 
 # --- AI Services Toggle ---
 # Enable or disable specific AI providers.

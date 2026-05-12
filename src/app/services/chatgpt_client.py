@@ -25,14 +25,12 @@ async def init_chatgpt_client() -> bool:
 
     try:
         access_token = CONFIG["ChatGPT"].get("access_token", "").strip()
-        base_url = CONFIG["ChatGPT"].get("base_url", "").strip()
 
         if not access_token:
             error_msg = (
                 "ChatGPT access_token not found in config.conf. "
-                "Open https://chat.openai.com in your browser, open DevTools, "
-                "go to Application → Cookies → __Secure-next-auth.session-token, "
-                "or check https://chat.openai.com/api/auth/session for access_token."
+                "Log in to https://chatgpt.com in Firefox, then visit "
+                "https://chat.openai.com/api/auth/session to get accessToken."
             )
             logger.error(error_msg)
             _initialization_error = error_msg
