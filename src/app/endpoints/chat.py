@@ -326,9 +326,45 @@ async def _route_to_deepseek(prompt: str, request: OpenAIChatRequest, is_stream:
     return openai_response
 
 
+MAX_CHATGPT_PROMPT_LEN = 15000  # f/conversation returns 413 if payload too large
+
+
+def _truncate_prompt(prompt: str) -> str:
+    """Truncate prompt from the middle to fit ChatGPT's request size limit."""
+    if len(prompt) <= MAX_CHATGPT_PROMPT_LEN:
+        return prompt
+    # Keep first 25% and last 75% (roughly keep system + intro, and latest messages)
+    head_len = MAX_CHATGPT_PROMPT_LEN // 4
+    tail_len = MAX_CHATGPT_PROMPT_LEN - head_len - 50
+    truncated = prompt[:head_len] + (
+        f"\n\n...[{len(prompt) - head_len - tail_len} chars of conversation history truncated]...\n\n"
+    ) + prompt[-tail_len:]
+    return truncated
+
+
 async def _route_to_chatgpt(prompt: str, request: OpenAIChatRequest, is_stream: bool):
     """Handle /v1/chat/completions via ChatGPT web."""
     from app.services.chatgpt_client import get_chatgpt_client, ChatGPTClientNotInitializedError
+
+    # Log request details for debugging
+    msg_count = len(request.messages)
+    content_types = set()
+    for m in request.messages:
+        c = m.get("content")
+        content_types.add(type(c).__name__)
+    last_role = request.messages[-1].get("role", "?") if request.messages else "?"
+    logger.info(
+        f"[ChatGPT-v1] msgs={msg_count} ctypes={','.join(content_types)} "
+        f"last_role={last_role} stream={is_stream} "
+        f"prompt_len={len(prompt)}"
+    )
+
+    # Truncate long prompts to avoid 413 Payload Too Large
+    original_len = len(prompt)
+    prompt = _truncate_prompt(prompt)
+    if len(prompt) != original_len:
+        logger.info(f"[ChatGPT-v1] Truncated prompt: {original_len} -> {len(prompt)} chars")
+
     try:
         gpt_client = get_chatgpt_client()
     except ChatGPTClientNotInitializedError as e:
@@ -344,6 +380,7 @@ async def _route_to_chatgpt(prompt: str, request: OpenAIChatRequest, is_stream: 
             import time
             ts = int(time.time())
             chunk_id = f"chatcmpl-{ts}"
+            chunk_count = 0
             try:
                 async for chunk in gpt_client.generate_stream(
                     prompt, model="auto",
@@ -364,6 +401,7 @@ async def _route_to_chatgpt(prompt: str, request: OpenAIChatRequest, is_stream: 
                         break
                     content = chunk.get("content", "")
                     if content:
+                        chunk_count += 1
                         sse_data = {
                             "id": chunk_id,
                             "object": "chat.completion.chunk",
@@ -377,7 +415,9 @@ async def _route_to_chatgpt(prompt: str, request: OpenAIChatRequest, is_stream: 
                         }
                         yield f"data: {json.dumps(sse_data)}\n\n"
                 yield "data: [DONE]\n\n"
+                logger.info(f"[ChatGPT-v1] Stream done: {chunk_count} chunks")
             except Exception as e:
+                logger.error(f"[ChatGPT-v1] Stream error after {chunk_count} chunks: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
         return StreamingResponse(sse_stream(), media_type="text/event-stream")

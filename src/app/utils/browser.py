@@ -364,26 +364,28 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
     """Enhanced cookie extraction with cross-platform support"""
     browser_name = CONFIG["Browser"].get("name", "firefox").lower()
     logger.info(f"Attempting to get cookies from browser: {browser_name} for service: {service}")
-
+    
     extractor = CrossPlatformCookieExtractor()
-
+    
     try:
         cookies = extractor.get_cookies_with_fallback(browser_name)
-        if cookies:
-            logger.info(f"Successfully retrieved cookies from {browser_name}")
-        else:
+        
+        if not cookies:
             logger.error(f"Failed to retrieve cookies from {browser_name}")
             return None
+        
+        logger.info(f"Successfully retrieved cookies from {browser_name}")
+        
     except Exception as e:
         logger.error(f"An unexpected error occurred while retrieving cookies from {browser_name}: {e}", exc_info=True)
         return None
-
+    
     # Process cookies for the requested service
     if service == "gemini":
         logger.info("Looking for Gemini cookies (__Secure-1PSID and __Secure-1PSIDTS)...")
         secure_1psid = None
         secure_1psidts = None
-
+        
         try:
             for cookie in cookies:
                 if hasattr(cookie, 'name') and hasattr(cookie, 'value') and hasattr(cookie, 'domain'):
@@ -396,24 +398,13 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
         except Exception as e:
             logger.error(f"Error processing cookies: {e}")
             return None
-
-        # If browser-cookie3 missed PSIDTS, try reading Firefox database directly
-        if secure_1psid and not secure_1psidts and browser_name == "firefox":
-            logger.info("browser-cookie3 found PSID but missed PSIDTS, trying direct database read...")
-            try:
-                db_path = _get_firefox_cookies_db_path()
-                if db_path:
-                    ts_val = _read_firefox_cookie_direct(db_path, "__Secure-1PSIDTS")
-                    if ts_val:
-                        secure_1psidts = ts_val
-                        logger.info(f"Found __Secure-1PSIDTS via direct DB read: {secure_1psidts[:20]}...")
-            except Exception as e:
-                logger.warning(f"Direct Firefox DB read failed: {e}")
-
+        
         if secure_1psid and secure_1psidts:
+            # Check if values are not empty (they might be encrypted on Windows)
             if len(secure_1psid.strip()) == 0 or len(secure_1psidts.strip()) == 0:
-                logger.warning("Gemini cookies found but appear to be empty (possibly encrypted).")
+                logger.warning("Gemini cookies found but appear to be empty (possibly encrypted). Manual cookie extraction may be required on Windows.")
                 return None
+            
             logger.info("Both Gemini cookies found and appear valid.")
             return secure_1psid, secure_1psidts
         else:
@@ -422,185 +413,3 @@ def get_cookie_from_browser(service: Literal["gemini"]) -> Optional[tuple]:
     else:
         logger.warning(f"Unsupported service: {service}")
         return None
-
-
-def _get_firefox_cookies_db_path() -> Optional[str]:
-    """Find Firefox cookies.sqlite path, including Snap installations."""
-    import glob
-
-    home = os.path.expanduser("~")
-    # Standard path
-    paths = glob.glob(os.path.join(home, ".mozilla", "firefox", "*.default*", "cookies.sqlite"))
-    if paths:
-        return paths[0]
-    # Snap path
-    paths = glob.glob(os.path.join(home, "snap", "firefox", "common", ".mozilla", "firefox", "*.default*", "cookies.sqlite"))
-    if paths:
-        return paths[0]
-    return None
-
-
-def _read_firefox_cookie_direct(db_path: str, cookie_name: str) -> Optional[str]:
-    """Read a specific cookie value directly from Firefox's cookies.sqlite."""
-    import tempfile, shutil
-
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
-            tmp_path = tf.name
-            shutil.copy2(db_path, tmp_path)
-
-        conn = sqlite3.connect(tmp_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT value FROM moz_cookies WHERE name = ? AND host LIKE '%google%'",
-            (cookie_name,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if row and row[0]:
-            return row[0]
-        return None
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
-def get_deepseek_token_from_browser() -> Optional[str]:
-    """
-    Auto-extract DeepSeek userToken from browser localStorage.
-
-    DeepSeek stores the auth token in localStorage (not cookies),
-    so we need to read browser profile data directly.
-    """
-    browser_name = CONFIG["Browser"].get("name", "chrome").lower()
-    logger.info(f"Attempting to extract DeepSeek token from browser: {browser_name}")
-
-    if browser_name in ("chrome", "google-chrome"):
-        token = _get_deepseek_token_from_chromium("google-chrome")
-    elif browser_name == "brave":
-        token = _get_deepseek_token_from_chromium("brave")
-    elif browser_name == "edge":
-        token = _get_deepseek_token_from_chromium("microsoft-edge")
-    elif browser_name == "firefox":
-        token = _get_deepseek_token_from_firefox()
-    else:
-        logger.warning(f"Unsupported browser for DeepSeek token extraction: {browser_name}")
-        return None
-
-    if token:
-        logger.info("DeepSeek token successfully extracted from browser.")
-        return token
-
-    logger.warning("Could not extract DeepSeek token from browser.")
-    return None
-
-
-def _get_deepseek_token_from_chromium(browser_dir_name: str) -> Optional[str]:
-    """
-    Extract DeepSeek userToken from Chromium-based browser localStorage (LevelDB).
-    """
-    home = os.path.expanduser("~")
-    leveldb_path = os.path.join(
-        home, ".config", browser_dir_name, "Default", "Local Storage", "leveldb"
-    )
-
-    if not os.path.isdir(leveldb_path):
-        logger.info(f"Chromium LevelDB path not found: {leveldb_path}")
-        # Fallback: try snap-based Chrome path
-        snap_path = os.path.join(
-            home, "snap", browser_dir_name, "current",
-            ".config", browser_dir_name, "Default", "Local Storage", "leveldb"
-        )
-        if os.path.isdir(snap_path):
-            leveldb_path = snap_path
-        else:
-            return None
-
-    # The localStorage key in LevelDB is: _https://chat.deepseek.com\x00\x00userToken
-    # We look for the origin marker + key pattern and extract the value nearby.
-    origin_marker = b"chat.deepseek.com"
-    key_marker = b"userToken"
-
-    for fname in sorted(os.listdir(leveldb_path)):
-        if not (fname.endswith(".ldb") or fname.endswith(".log")):
-            continue
-        fpath = os.path.join(leveldb_path, fname)
-        try:
-            with open(fpath, "rb") as f:
-                data = f.read()
-        except OSError:
-            continue
-
-        if origin_marker not in data or key_marker not in data:
-            continue
-
-        # Token is a long alphanumeric string (JWT-like or base64)
-        # Try to find it near "userToken" marker
-        idx = data.find(key_marker)
-        if idx == -1:
-            continue
-
-        # Search forward from userToken for a valid-looking token string
-        search_start = idx + len(key_marker)
-        chunk = data[search_start:search_start + 300]
-
-        # The token is base64-encoded (may contain +, /, =) or a JWT (dots)
-        import re
-        matches = re.findall(rb"[A-Za-z0-9_\-\.\+/]{40,}", chunk)
-        for m in matches:
-            token = m.decode("utf-8", errors="ignore")
-            if len(token) >= 40:
-                return token
-
-    return None
-
-
-def _get_deepseek_token_from_firefox() -> Optional[str]:
-    """
-    Extract DeepSeek userToken from Firefox localStorage (webappsstore.sqlite).
-    """
-    home = os.path.expanduser("~")
-    profiles_path = os.path.join(home, ".mozilla", "firefox")
-
-    if not os.path.isdir(profiles_path):
-        return None
-
-    import glob
-    profile_dirs = glob.glob(os.path.join(profiles_path, "*.default*")) + \
-                   glob.glob(os.path.join(profiles_path, "*.default-release*"))
-
-    for profile_dir in profile_dirs:
-        db_path = os.path.join(profile_dir, "webappsstore.sqlite")
-        if not os.path.exists(db_path):
-            continue
-        try:
-            import tempfile
-            import shutil
-
-            with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
-                tmp_path = tf.name
-                shutil.copy2(db_path, tmp_path)
-
-            try:
-                conn = sqlite3.connect(tmp_path)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT value FROM webappsstore2 "
-                    "WHERE scope LIKE '%chat.deepseek%' AND key = 'userToken'"
-                )
-                row = cursor.fetchone()
-                conn.close()
-                if row and row[0]:
-                    return row[0]
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.warning(f"Failed to read Firefox localStorage: {e}")
-            continue
-
-    return None

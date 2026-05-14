@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.gemini_client import get_gemini_client, init_gemini_client, GeminiClientNotInitializedError
 from app.services.session_manager import init_session_managers
-from app.services.deepseek_client import init_deepseek_client, get_deepseek_client, DeepSeekClientNotInitializedError
+from app.services.deepseek_client import init_deepseek_client
 from app.services.deepseek_session_manager import init_deepseek_session_managers
 from app.services.chatgpt_client import init_chatgpt_client
 from app.logger import logger
@@ -49,8 +49,7 @@ async def lifespan(app: FastAPI):
 
     # --- DeepSeek Initialization ---
     try:
-        ds_init_result = await init_deepseek_client()
-        if ds_init_result:
+        if await init_deepseek_client():
             init_deepseek_session_managers()
             logger.info("DeepSeek client and session managers initialized.")
         else:
@@ -60,8 +59,7 @@ async def lifespan(app: FastAPI):
 
     # --- ChatGPT Initialization ---
     try:
-        gpt_init_result = await init_chatgpt_client()
-        if gpt_init_result:
+        if await init_chatgpt_client():
             logger.info("ChatGPT client initialized successfully.")
         else:
             logger.warning("ChatGPT client initialization skipped (check config).")

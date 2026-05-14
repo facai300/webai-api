@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, AsyncGenerator, Dict, Any
+from typing import Optional, List, AsyncGenerator, Dict, Any
 
 from chatgpt_web import ChatGPTClient
 
@@ -22,19 +22,21 @@ class MyChatGPTClient:
         self,
         message: str,
         model: str = "",
+        files: Optional[List[str]] = None,
     ) -> str:
         """Non-streaming: send a message and return the full response."""
         if not self.client:
             raise RuntimeError("ChatGPT client not initialized")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self.client.ask_blocking, message, model
+            None, lambda: self.client.ask_blocking(message, model, files)
         )
 
     async def generate_stream(
         self,
         message: str,
         model: str = "",
+        files: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streaming: yield text chunks as they arrive."""
         if not self.client:

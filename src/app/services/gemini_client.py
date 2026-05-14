@@ -27,20 +27,17 @@ async def init_gemini_client() -> bool:
 
     if CONFIG.getboolean("EnabledAI", "gemini", fallback=True):
         try:
+            gemini_cookie_1PSID = CONFIG["Cookies"].get("gemini_cookie_1PSID")
+            gemini_cookie_1PSIDTS = CONFIG["Cookies"].get("gemini_cookie_1PSIDTS")
             gemini_proxy = CONFIG["Proxy"].get("http_proxy")
+
+            if not gemini_cookie_1PSID or not gemini_cookie_1PSIDTS:
+                cookies = get_cookie_from_browser("gemini")
+                if cookies:
+                    gemini_cookie_1PSID, gemini_cookie_1PSIDTS = cookies
+
             if gemini_proxy == "":
                 gemini_proxy = None
-
-            # 始终优先从 Firefox 提取最新 cookie，避免使用被 Google 标记的缓存 cookie
-            gemini_cookie_1PSID = gemini_cookie_1PSIDTS = None
-            cookies = get_cookie_from_browser("gemini")
-            if cookies:
-                gemini_cookie_1PSID, gemini_cookie_1PSIDTS = cookies
-
-            # 如果 Firefox 拿不到，再从 config.conf 读缓存
-            if not gemini_cookie_1PSID or not gemini_cookie_1PSIDTS:
-                gemini_cookie_1PSID = CONFIG["Cookies"].get("gemini_cookie_1PSID")
-                gemini_cookie_1PSIDTS = CONFIG["Cookies"].get("gemini_cookie_1PSIDTS")
 
             if gemini_cookie_1PSID and gemini_cookie_1PSIDTS:
                 _gemini_client = MyGeminiClient(secure_1psid=gemini_cookie_1PSID, secure_1psidts=gemini_cookie_1PSIDTS, proxy=gemini_proxy)

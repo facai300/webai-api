@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ from app.services.chatgpt_client import get_chatgpt_client, ChatGPTClientNotInit
 class ChatGPTRequest(BaseModel):
     message: str
     model: str = Field(default="auto", description="Model: auto, gpt-4, gpt-4o, etc.")
+    files: Optional[List[str]] = Field(default=None, description="File paths to upload (video/image)")
     stream: Optional[bool] = False
 
 
@@ -22,10 +23,19 @@ def _truncate(msg: str, n: int = 60) -> str:
     return msg[:n] + "..." if len(msg) > n else msg
 
 
+async def _call_gpt(client, message, model, files):
+    """Call ChatGPT client with optional file uploads."""
+    if files:
+        return await client.generate_content(message, model=model, files=files)
+    return await client.generate_content(message, model=model)
+
+
 @router.post("/gpt")
 async def gpt_generate(request: ChatGPTRequest):
     t0 = time.time()
     logger.info(f"[ChatGPT] POST /gpt model={request.model} msg=\"{_truncate(request.message)}\"")
+    if request.files:
+        logger.info(f"[ChatGPT] 附带 {len(request.files)} 个文件")
 
     try:
         client = get_chatgpt_client()
@@ -35,7 +45,7 @@ async def gpt_generate(request: ChatGPTRequest):
     await client.reset_conversation()
 
     try:
-        response = await client.generate_content(request.message, model=request.model)
+        response = await _call_gpt(client, request.message, request.model, request.files)
         elapsed = time.time() - t0
         logger.info(f"[ChatGPT] OK {len(response)} chars in {elapsed:.1f}s")
         return {"response": response}
@@ -49,6 +59,8 @@ async def gpt_generate(request: ChatGPTRequest):
 async def gpt_chat(request: ChatGPTRequest):
     t0 = time.time()
     logger.info(f"[ChatGPT] POST /gpt-chat model={request.model} msg=\"{_truncate(request.message)}\"")
+    if request.files:
+        logger.info(f"[ChatGPT] 附带 {len(request.files)} 个文件")
 
     try:
         client = get_chatgpt_client()
@@ -56,7 +68,7 @@ async def gpt_chat(request: ChatGPTRequest):
         raise HTTPException(status_code=503, detail=str(e))
 
     try:
-        response = await client.generate_content(request.message, model=request.model)
+        response = await _call_gpt(client, request.message, request.model, request.files)
         elapsed = time.time() - t0
         logger.info(f"[ChatGPT] Chat OK {len(response)} chars in {elapsed:.1f}s")
         return {"response": response}
@@ -70,6 +82,8 @@ async def gpt_chat(request: ChatGPTRequest):
 async def gpt_stream(request: ChatGPTRequest):
     t0 = time.time()
     logger.info(f"[ChatGPT] POST /gpt/stream model={request.model} msg=\"{_truncate(request.message)}\"")
+    if request.files:
+        logger.info(f"[ChatGPT] 附带 {len(request.files)} 个文件")
 
     try:
         client = get_chatgpt_client()
@@ -83,7 +97,7 @@ async def gpt_stream(request: ChatGPTRequest):
         chunk_id = f"chatcmpl-{ts}"
         total_chars = 0
         try:
-            async for chunk in client.generate_stream(request.message, model=request.model):
+            async for chunk in client.generate_stream(request.message, model=request.model, files=request.files):
                 if chunk.get("type") != "text":
                     continue
                 if chunk.get("finish_reason") == "stop":
